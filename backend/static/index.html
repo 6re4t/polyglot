@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Polyglot Voice Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header>
+    <h1>🌐 Polyglot Voice Agent</h1>
+    <div class="header-right">
+      <span id="conn-badge" class="badge off">● Disconnected</span>
+      <span id="lang-badge" class="badge">EN</span>
+      <span id="tts-badge"  class="badge">TTS: browser</span>
+    </div>
+  </header>
+
+  <!-- ── Status bar ─────────────────────────────────────────────────────── -->
+  <div id="status-bar">Ready</div>
+
+  <!-- ── Main grid ──────────────────────────────────────────────────────── -->
+  <div class="main-grid">
+
+    <!-- Left column: controls + conversation -->
+    <div class="col-left">
+
+      <!-- Controls -->
+      <div class="controls">
+        <button id="mic-btn"  class="btn-mic"  title="Start recording from microphone">🎤 Record</button>
+        <button id="stop-btn" class="btn-stop" disabled title="Stop recording">⏹ Stop</button>
+        <div class="text-row">
+          <input id="text-input" type="text" placeholder="Or type a message and press Enter…" autocomplete="off" />
+          <button id="send-btn" class="btn-send">Send</button>
+        </div>
+      </div>
+
+      <!-- Transcript -->
+      <div class="panel">
+        <h2>Transcript</h2>
+        <div class="panel-content">
+          <ul id="transcript-list">
+            <li style="color:var(--text-dim);font-size:0.82rem;">Speak or type to begin…</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Agent Response -->
+      <div class="panel">
+        <h2>Agent Response</h2>
+        <div class="panel-content">
+          <ul id="response-list">
+            <li style="color:var(--text-dim);font-size:0.82rem;">Responses will appear here…</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Latency Table -->
+      <div class="panel">
+        <h2>Latency per Turn (ms)</h2>
+        <div class="latency-table-wrap">
+          <table class="latency" id="latency-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>STT</th>
+                <th>LLM</th>
+                <th>TTS</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody id="latency-tbody">
+              <tr><td colspan="5" style="color:var(--text-dim);text-align:center;padding:0.5rem;">No turns yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /col-left -->
+
+    <!-- Right column: memory -->
+    <div class="col-right">
+      <div class="panel" style="flex:1;">
+        <h2>Conversation Memory</h2>
+        <pre id="memory-pre" style="color:var(--text-dim);font-size:0.75rem;">No memory yet.</pre>
+      </div>
+    </div>
+
+  </div><!-- /main-grid -->
+
+  <!-- ── Scenario test buttons ──────────────────────────────────────────── -->
+  <div class="scenarios">
+    <h2>Scenario Tests — click a turn to send it</h2>
+
+    <div class="scenario-group">
+      <div class="scenario-group-label">Scenario 1 — Customer Support: Order Status</div>
+      <div class="scenario-turns">
+        <button class="scenario-turn-btn en" data-text="Hi, I need to check the status of my order. The order ID is 4421.">T1 EN · Order 4421</button>
+        <button class="scenario-turn-btn en" data-text="Yes, the email on the account is rahul@example.com.">T2 EN · Email</button>
+        <button class="scenario-turn-btn hi" data-text="Theek hai, lekin delivery kal tak ho jaayegi kya?">T3 HI · Delivery?</button>
+        <button class="scenario-turn-btn hi" data-text="Aur agar nahi hua toh refund mil sakta hai?">T4 HI · Refund?</button>
+        <button class="scenario-turn-btn en" data-text="Actually let's switch back — can you email me the tracking link?">T5 EN · Tracking</button>
+      </div>
+    </div>
+
+    <div class="scenario-group">
+      <div class="scenario-group-label">Scenario 2 — Travel Planning: Hotel Booking</div>
+      <div class="scenario-turns">
+        <button class="scenario-turn-btn es" data-text="Hola, quiero reservar un hotel en Bangalore para el próximo fin de semana.">T1 ES · Hotel Bangalore</button>
+        <button class="scenario-turn-btn es" data-text="Para dos personas, presupuesto de 5000 rupias por noche.">T2 ES · 2 pax ₹5000</button>
+        <button class="scenario-turn-btn en" data-text="Sorry, my Spanish is rusty. Can we continue in English? Tell me again about the second option.">T3 EN · Switch + Option 2</button>
+        <button class="scenario-turn-btn en" data-text="Book it. Confirm the dates please.">T4 EN · Book it</button>
+      </div>
+    </div>
+
+    <div class="scenario-group">
+      <div class="scenario-group-label">Scenario 3 — Code-Switching</div>
+      <div class="scenario-turns">
+        <button class="scenario-turn-btn mix" data-text="Mujhe ek pizza order karna hai, but make it veg only please.">T1 MIX · Veg pizza</button>
+        <button class="scenario-turn-btn en"  data-text="And add a coke too.">T2 EN · Add Coke</button>
+      </div>
+    </div>
+
+    <div class="scenario-group">
+      <div class="scenario-group-label">Scenario 4 — Rapid Language Switching</div>
+      <div class="scenario-turns">
+        <button class="scenario-turn-btn en" data-text="What's the weather in Mumbai today?">T1 EN · Mumbai</button>
+        <button class="scenario-turn-btn hi" data-text="Aur Delhi mein?">T2 HI · Delhi</button>
+        <button class="scenario-turn-btn es" data-text="¿Y en Chennai?">T3 ES · Chennai</button>
+        <button class="scenario-turn-btn en" data-text="Compare all three for me.">T4 EN · Compare</button>
+      </div>
+    </div>
+
+  </div><!-- /scenarios -->
+
+</div><!-- /app -->
+
+<script src="/static/app.js"></script>
+</body>
+</html>
