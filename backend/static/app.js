@@ -284,12 +284,48 @@ async function playWavBase64(b64) {
 
 // ── Browser TTS fallback ──────────────────────────────────────────────────────
 
+/**
+ * Normalize text before handing it to speechSynthesis.
+ * Special characters adjacent to digits (₹, °, /) break number recognition
+ * in many browser TTS engines, causing "5000" to be read as "five zero zero zero".
+ */
+function normalizeSpeechText(text, language) {
+  let t = text;
+
+  // Currency symbols before numbers  →  spoken word after
+  t = t.replace(/₹\s*([\d,]+)/g,  '$1 rupees');
+  t = t.replace(/\$\s*([\d,]+)/g, '$1 dollars');
+  t = t.replace(/€\s*([\d,]+)/g,  '$1 euros');
+
+  // Temperature  →  "32 degrees"
+  t = t.replace(/([\d.]+)\s*°C/gi, '$1 degrees Celsius');
+  t = t.replace(/([\d.]+)\s*°F/gi, '$1 degrees Fahrenheit');
+
+  // Per-night / por noche constructs
+  t = t.replace(/([\d,]+)\s*\/\s*night/gi,  '$1 per night');
+  t = t.replace(/([\d,]+)\s*\/\s*noche/gi,  '$1 por noche');
+
+  // Percentages
+  t = t.replace(/([\d.]+)\s*%/g, '$1 percent');
+
+  // URLs — don't spell them out
+  t = t.replace(/https?:\/\/\S+/g, 'link');
+
+  // Commas inside large numbers (1,000 → 1000) so TTS reads naturally
+  t = t.replace(/(\d),(\d{3})/g, '$1$2');
+
+  // Bullet / dash list markers that produce odd pauses
+  t = t.replace(/^\s*[-–•]\s*/gm, '');
+
+  return t.trim();
+}
+
 function speakBrowser(text, language) {
   if (!window.speechSynthesis) return;
   window.speechSynthesis.cancel();   // stop any previous utterance
 
   const langMap = { en: 'en-US', hi: 'hi-IN', es: 'es-ES' };
-  const utter   = new SpeechSynthesisUtterance(text);
+  const utter   = new SpeechSynthesisUtterance(normalizeSpeechText(text, language));
   utter.lang    = langMap[language] || 'en-US';
   utter.rate    = 1.0;
   utter.pitch   = 1.0;
