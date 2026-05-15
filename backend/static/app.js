@@ -30,6 +30,7 @@ let sourceNode     = null;
 let pcmSamples     = [];   // Float32 samples collected during recording
 let turnCounter    = 0;
 let latencyRows    = [];   // Array of latency summary objects for the table
+let pendingUserBubble = null;  // user bubble shown before transcript arrives
 
 // ── DOM refs ────────────────────────────────────────────────────────────────
 const micBtn        = document.getElementById('mic-btn');
@@ -40,8 +41,7 @@ const connBadge     = document.getElementById('conn-badge');
 const langBadge     = document.getElementById('lang-badge');
 const ttsBadge      = document.getElementById('tts-badge');
 const statusBar     = document.getElementById('status-bar');
-const transcriptList= document.getElementById('transcript-list');
-const responseList  = document.getElementById('response-list');
+const chatThread    = document.getElementById('chat-thread');
 const memoryPre     = document.getElementById('memory-pre');
 const latencyTbody  = document.getElementById('latency-tbody');
 
@@ -96,13 +96,15 @@ function handleMessage(msg) {
 
     case 'transcript':
       setStatus(`Transcribed [${msg.language?.toUpperCase()}]: "${msg.text}"`, false);
-      appendTranscript(msg.text, msg.language || 'en');
+      addUserBubble(msg.text, msg.language || 'en');
       updateLangBadge(msg.language);
+      showTypingIndicator();
       break;
 
     case 'agent_response':
       setStatus('Agent responded.', false);
-      appendResponse(msg.text, msg.language || 'en');
+      removeTypingIndicator();
+      addAgentBubble(msg.text, msg.language || 'en');
       break;
 
     case 'audio_response':
@@ -247,6 +249,9 @@ function sendText() {
   const text = textInput.value.trim();
   if (!text) return;
   textInput.value = '';
+  // Optimistically show user bubble before transcript echo arrives
+  pendingUserBubble = addUserBubble(text, null);  // lang unknown until server replies
+  showTypingIndicator();
   wsSend({ type: 'text_input', text });
   setStatus(`Sent: "${text}"`, false);
 }
@@ -338,7 +343,7 @@ function speakBrowser(text, language) {
   window.speechSynthesis.speak(utter);
 }
 
-// ── UI helpers ───────────────────────────────────────────────────────────────
+// ── Chat bubble helpers ───────────────────────────────────────────────────────
 
 const LANG_LABELS = { en: 'EN', hi: 'HI', es: 'ES' };
 
@@ -353,27 +358,83 @@ function setStatus(msg, isError) {
   statusBar.className   = isError ? 'error' : '';
 }
 
-function appendTranscript(text, lang) {
-  // Remove the placeholder item
-  const placeholder = transcriptList.querySelector('li[style]');
-  if (placeholder) placeholder.remove();
+function buildBubble(text, lang, role) {
+  const empty = chatThread.querySelector('.chat-empty');
+  if (empty) empty.remove();
 
-  const li  = document.createElement('li');
-  li.className = `transcript-item ${lang}`;
-  li.innerHTML = `<span class="ti-lang">${(LANG_LABELS[lang] || lang)}</span>${escapeHtml(text)}`;
-  transcriptList.appendChild(li);
-  li.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const langKey   = lang || 'en';
+  const langLabel = LANG_LABELS[langKey] || langKey.toUpperCase();
+  const isUser    = role === 'user';
+
+  const row = document.createElement('div');
+  row.className = `msg-row ${role}`;
+  row.innerHTML = `
+    <div class="msg-avatar">${isUser ? '🧑' : '🤖'}</div>
+    <div class="msg-bubble">
+      <div class="msg-meta">
+        <span>${isUser ? 'You' : 'Agent'}</span>
+        ${lang ? `<span class="msg-lang ${langKey}">${langLabel}</span>` : ''}
+      </div>
+      <div class="msg-text">${escapeHtml(text)}</div>
+    </div>
+  `;
+  chatThread.appendChild(row);
+  chatThread.scrollTop = chatThread.scrollHeight;
+  return row;
 }
 
-function appendResponse(text, lang) {
-  const placeholder = responseList.querySelector('li[style]');
-  if (placeholder) placeholder.remove();
+function addUserBubble(text, lang) {
+  if (pendingUserBubble) {
+    // Patch in lang badge now that server has confirmed the language
+    if (lang) {
+      const meta = pendingUserBubble.querySelector('.msg-meta');
+      if (meta && !meta.querySelector('.msg-lang')) {
+        const langKey   = lang;
+        const langLabel = LANG_LABELS[langKey] || langKey.toUpperCase();
+        const badge = document.createElement('span');
+        badge.className = `msg-lang ${langKey}`;
+        badge.textContent = langLabel;
+        meta.appendChild(badge);
+      }
+    }
+    const b = pendingUserBubble;
+    pendingUserBubble = null;
+    return b;
+  }
+  return buildBubble(text, lang, 'user');
+}
 
-  const li  = document.createElement('li');
-  li.className = 'response-item';
-  li.innerHTML = `<span class="ri-lang">${(LANG_LABELS[lang] || lang)}</span>${escapeHtml(text)}`;
-  responseList.appendChild(li);
-  li.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+function addAgentBubble(text, lang) {
+  return buildBubble(text, lang, 'agent');
+}
+
+// ── Typing indicator ──────────────────────────────────────────────────────────
+let _typingRow = null;
+
+function showTypingIndicator() {
+  if (_typingRow) return;
+  const empty = chatThread.querySelector('.chat-empty');
+  if (empty) empty.remove();
+
+  _typingRow = document.createElement('div');
+  _typingRow.className = 'msg-row agent typing-indicator';
+  _typingRow.innerHTML = `
+    <div class="msg-avatar">🤖</div>
+    <div class="msg-bubble">
+      <div class="msg-meta"><span>Agent</span></div>
+      <div class="msg-text">
+        <span class="typing-dot"></span>
+        <span class="typing-dot"></span>
+        <span class="typing-dot"></span>
+      </div>
+    </div>
+  `;
+  chatThread.appendChild(_typingRow);
+  chatThread.scrollTop = chatThread.scrollHeight;
+}
+
+function removeTypingIndicator() {
+  if (_typingRow) { _typingRow.remove(); _typingRow = null; }
 }
 
 function renderMemory(mem) {

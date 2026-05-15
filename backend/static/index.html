@@ -28,7 +28,7 @@
   <!-- ── Main grid ──────────────────────────────────────────────────────── -->
   <div class="main-grid">
 
-    <!-- Left column: controls + conversation -->
+    <!-- Left column: controls + chat thread -->
     <div class="col-left">
 
       <!-- Controls -->
@@ -41,39 +41,29 @@
         </div>
       </div>
 
-      <!-- Transcript -->
-      <div class="panel">
-        <h2>Transcript</h2>
-        <div class="panel-content">
-          <ul id="transcript-list">
-            <li style="color:var(--text-dim);font-size:0.82rem;">Speak or type to begin…</li>
-          </ul>
+      <!-- Chat thread -->
+      <div class="chat-panel">
+        <div id="chat-thread">
+          <div class="chat-empty">Speak or type to begin…</div>
         </div>
       </div>
 
-      <!-- Agent Response -->
+    </div><!-- /col-left -->
+
+    <!-- Right column: memory + latency -->
+    <div class="col-right">
+
       <div class="panel">
-        <h2>Agent Response</h2>
-        <div class="panel-content">
-          <ul id="response-list">
-            <li style="color:var(--text-dim);font-size:0.82rem;">Responses will appear here…</li>
-          </ul>
-        </div>
+        <h2>Conversation Memory</h2>
+        <pre id="memory-pre">No memory yet.</pre>
       </div>
 
-      <!-- Latency Table -->
       <div class="panel">
         <h2>Latency per Turn (ms)</h2>
         <div class="latency-table-wrap">
           <table class="latency" id="latency-table">
             <thead>
-              <tr>
-                <th>#</th>
-                <th>STT</th>
-                <th>LLM</th>
-                <th>TTS</th>
-                <th>Total</th>
-              </tr>
+              <tr><th>#</th><th>STT</th><th>LLM</th><th>TTS</th><th>Total</th></tr>
             </thead>
             <tbody id="latency-tbody">
               <tr><td colspan="5" style="color:var(--text-dim);text-align:center;padding:0.5rem;">No turns yet</td></tr>
@@ -82,15 +72,7 @@
         </div>
       </div>
 
-    </div><!-- /col-left -->
-
-    <!-- Right column: memory -->
-    <div class="col-right">
-      <div class="panel" style="flex:1;">
-        <h2>Conversation Memory</h2>
-        <pre id="memory-pre" style="color:var(--text-dim);font-size:0.75rem;">No memory yet.</pre>
-      </div>
-    </div>
+    </div><!-- /col-right -->
 
   </div><!-- /main-grid -->
 
