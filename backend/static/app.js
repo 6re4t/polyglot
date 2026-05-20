@@ -52,7 +52,8 @@ let   bargeinNode     = null;
 
 // ── DOM refs ────────────────────────────────────────────────────────────────
 const micBtn        = document.getElementById('mic-btn');
-const stopBtn       = document.getElementById('stop-btn');
+const micBtnIcon    = document.getElementById('mic-btn-icon');
+const micBtnLabel   = document.getElementById('mic-btn-label');
 const textInput     = document.getElementById('text-input');
 const sendBtn       = document.getElementById('send-btn');
 const connBadge     = document.getElementById('conn-badge');
@@ -79,6 +80,23 @@ function updateBadgeText(badge, text) {
     textEl.textContent = text;
   } else {
     badge.textContent = text;
+  }
+}
+
+const MIC_SVG_PATHS  = '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v1a7 7 0 0 1-14 0v-1"></path><line x1="12" y1="19" x2="12" y2="22"></line>';
+const STOP_SVG_PATHS = '<rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>';
+
+function setMicBtnRecording(on) {
+  if (on) {
+    micBtn.classList.add('recording');
+    micBtn.title     = 'Stop recording';
+    micBtnLabel.textContent = 'Stop';
+    micBtnIcon.innerHTML    = STOP_SVG_PATHS;
+  } else {
+    micBtn.classList.remove('recording');
+    micBtn.title     = 'Start recording';
+    micBtnLabel.textContent = 'Record';
+    micBtnIcon.innerHTML    = MIC_SVG_PATHS;
   }
 }
 
@@ -190,8 +208,10 @@ function handleMessage(msg) {
 
 // ── Microphone recording ──────────────────────────────────────────────────────
 
-micBtn.addEventListener('click', startRecording);
-stopBtn.addEventListener('click', stopRecording);
+micBtn.addEventListener('click', () => {
+  if (isRecording) stopRecording();
+  else startRecording();
+});
 
 async function startRecording() {
   if (isRecording) return;
@@ -253,9 +273,7 @@ async function startRecording() {
   scriptNode.connect(audioCtx.destination);
 
   isRecording = true;
-  micBtn.classList.add('recording');
-  micBtn.disabled = true;
-  stopBtn.disabled = false;
+  setMicBtnRecording(true);
   
   setStatus('Recording… speak now (auto-stops on silence).', false);
   setVoiceState('recording', 'Listening…', 'Waiting for voice…');
@@ -272,9 +290,7 @@ async function stopRecording() {
   if (sourceNode)  { sourceNode.disconnect(); }
   if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); }
 
-  micBtn.classList.remove('recording');
-  micBtn.disabled = false;
-  stopBtn.disabled = true;
+  setMicBtnRecording(false);
   
   setStatus('Processing audio…', false);
   setVoiceState('processing', 'Thinking...', 'Analyzing speech wave...');
