@@ -69,14 +69,27 @@ class PiperTTSProvider(TTSProvider):
         return None
 
     def _synth_python_api(self, text: str, voice_path: str) -> Optional[bytes]:
-        """Use the piper-tts Python package to synthesize."""
+        """Use the piper-tts Python package (v1.4+ AudioChunk API)."""
         try:
             if voice_path not in self._loaded_voices:
                 self._loaded_voices[voice_path] = PiperVoice.load(voice_path)
             voice = self._loaded_voices[voice_path]
+
+            # v1.4+: synthesize() returns Iterable[AudioChunk]
+            chunks = list(voice.synthesize(text))
+            if not chunks:
+                return None
+
+            # Use format info from the first chunk
+            c0 = chunks[0]
+            audio_bytes = b"".join(ch.audio_int16_bytes for ch in chunks)
+
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wav_out:
-                voice.synthesize(text, wav_out)
+                wav_out.setnchannels(c0.sample_channels)
+                wav_out.setsampwidth(c0.sample_width)
+                wav_out.setframerate(c0.sample_rate)
+                wav_out.writeframes(audio_bytes)
             return buf.getvalue()
         except Exception as e:
             logger.warning(f"piper-tts Python API failed: {e}; trying CLI fallback.")
