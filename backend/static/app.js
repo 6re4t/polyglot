@@ -9,6 +9,8 @@
  *  - Piper WAV playback via AudioContext
  *  - Browser speechSynthesis TTS fallback
  *  - Updating all UI panels (transcript, response, memory, latency, badges)
+ *  - Custom state visualizer changes
+ *  - Structured memory card rendering and tab controllers
  */
 
 'use strict';
@@ -45,6 +47,25 @@ const chatThread    = document.getElementById('chat-thread');
 const memoryPre     = document.getElementById('memory-pre');
 const latencyTbody  = document.getElementById('latency-tbody');
 
+// ── Voice State Visualizer Helper ──────────────────────────────────────────
+function setVoiceState(state, title, desc) {
+  const panel = document.getElementById('voice-hub-panel');
+  if (!panel) return;
+  panel.className = `voice-hub-panel panel state-${state}`;
+  if (title) document.getElementById('voice-title').textContent = title;
+  if (desc) document.getElementById('voice-desc').textContent = desc;
+}
+
+// Badge text updater that doesn't blow away the dot icon
+function updateBadgeText(badge, text) {
+  const textEl = badge.querySelector('.badge-text');
+  if (textEl) {
+    textEl.textContent = text;
+  } else {
+    badge.textContent = text;
+  }
+}
+
 // ── WebSocket ────────────────────────────────────────────────────────────────
 
 function connectWS() {
@@ -54,21 +75,25 @@ function connectWS() {
 
   ws.onopen = () => {
     setStatus('Connected', false);
-    connBadge.textContent = '● Connected';
-    connBadge.classList.remove('off');
+    updateBadgeText(connBadge, 'Connected');
+    connBadge.className = 'badge on';
+    statusBar.className = 'connected';
     // Ping to keep alive
     setInterval(() => ws && ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({type:'ping'})), 20000);
   };
 
   ws.onclose = () => {
     setStatus('Disconnected — reconnecting in 3s…', true);
-    connBadge.textContent = '● Disconnected';
-    connBadge.classList.add('off');
+    updateBadgeText(connBadge, 'Disconnected');
+    connBadge.className = 'badge off';
+    statusBar.className = 'error';
+    setVoiceState('standby', 'System Offline', 'Attempting server reconnection...');
     setTimeout(connectWS, 3000);
   };
 
   ws.onerror = (e) => {
     setStatus('WebSocket error', true);
+    statusBar.className = 'error';
     console.error('WS error', e);
   };
 
@@ -96,6 +121,7 @@ function handleMessage(msg) {
 
     case 'transcript':
       setStatus(`Transcribed [${msg.language?.toUpperCase()}]: "${msg.text}"`, false);
+      setVoiceState('processing', 'Thinking...', 'Awaiting LLM generation...');
       addUserBubble(msg.text, msg.language || 'en');
       updateLangBadge(msg.language);
       showTypingIndicator();
@@ -103,21 +129,22 @@ function handleMessage(msg) {
 
     case 'agent_response':
       setStatus('Agent responded.', false);
+      setVoiceState('processing', 'Speaking...', 'Rendering response...');
       removeTypingIndicator();
       addAgentBubble(msg.text, msg.language || 'en');
       break;
 
     case 'audio_response':
       // Piper WAV audio from backend
-      ttsBadge.textContent = 'TTS: Piper';
-      ttsBadge.classList.add('piper');
+      updateBadgeText(ttsBadge, 'TTS: Piper');
+      ttsBadge.className = 'badge piper';
       playWavBase64(msg.data).catch(console.error);
       break;
 
     case 'tts_browser':
       // Browser speechSynthesis fallback
-      ttsBadge.textContent = 'TTS: browser';
-      ttsBadge.classList.remove('piper');
+      updateBadgeText(ttsBadge, 'TTS: Browser');
+      ttsBadge.className = 'badge';
       speakBrowser(msg.text, msg.language);
       break;
 
@@ -135,6 +162,8 @@ function handleMessage(msg) {
 
     case 'error':
       setStatus(`Error: ${msg.message}`, true);
+      statusBar.className = 'error';
+      setVoiceState('standby', 'System Standby', `Error: ${msg.message}`);
       console.error('Backend error:', msg.message);
       break;
   }
@@ -151,6 +180,8 @@ async function startRecording() {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   } catch (e) {
     setStatus(`Mic access denied: ${e.message}`, true);
+    statusBar.className = 'error';
+    setVoiceState('standby', 'Mic Access Error', e.message);
     return;
   }
 
@@ -159,7 +190,6 @@ async function startRecording() {
   sourceNode = audioCtx.createMediaStreamSource(mediaStream);
 
   // ScriptProcessorNode: 4096-sample buffer, 1 input channel, 1 output channel.
-  // Deprecated but universally supported; fine for a demo.
   scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
   pcmSamples = [];
 
@@ -172,11 +202,12 @@ async function startRecording() {
   scriptNode.connect(audioCtx.destination);
 
   isRecording = true;
-  micBtn.textContent = '🔴 Recording…';
   micBtn.classList.add('recording');
   micBtn.disabled = true;
   stopBtn.disabled = false;
+  
   setStatus('Recording… press Stop when done.', false);
+  setVoiceState('recording', 'Listening...', 'Awaiting voice inputs...');
 }
 
 async function stopRecording() {
@@ -188,14 +219,16 @@ async function stopRecording() {
   if (sourceNode)  { sourceNode.disconnect(); }
   if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); }
 
-  micBtn.textContent = '🎤 Record';
   micBtn.classList.remove('recording');
   micBtn.disabled = false;
   stopBtn.disabled = true;
+  
   setStatus('Processing audio…', false);
+  setVoiceState('processing', 'Thinking...', 'Analyzing speech wave...');
 
   if (pcmSamples.length === 0) {
     setStatus('No audio captured.', false);
+    setVoiceState('standby', 'System Standby', 'No audio captured.');
     return;
   }
 
@@ -232,10 +265,13 @@ async function stopRecording() {
     wsSend({ type: 'audio_chunk', data: b64 });
     wsSend({ type: 'audio_end' });
     setStatus('Audio sent — waiting for response…', false);
+    setVoiceState('processing', 'Thinking...', 'Waiting for transcriber results...');
 
     await audioCtx.close();
   } catch (e) {
     setStatus(`Audio processing error: ${e.message}`, true);
+    statusBar.className = 'error';
+    setVoiceState('standby', 'System Standby', `Error: ${e.message}`);
     console.error(e);
   }
 }
@@ -254,6 +290,7 @@ function sendText() {
   showTypingIndicator();
   wsSend({ type: 'text_input', text });
   setStatus(`Sent: "${text}"`, false);
+  setVoiceState('processing', 'Thinking...', 'Analyzing text inputs...');
 }
 
 // ── Scenario buttons ─────────────────────────────────────────────────────────
@@ -264,16 +301,17 @@ document.querySelectorAll('.scenario-turn-btn').forEach(btn => {
     if (!text) return;
     textInput.value = text;
     sendText();
-    // Briefly highlight the clicked button
-    btn.style.background = 'var(--accent)';
-    btn.style.color = '#fff';
-    setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 600);
+    
+    // Trigger ripple animation
+    btn.style.animation = 'inject-flash 0.8s ease-out';
+    setTimeout(() => { btn.style.animation = ''; }, 800);
   });
 });
 
 // ── Audio playback (Piper WAV) ────────────────────────────────────────────────
 
 async function playWavBase64(b64) {
+  setVoiceState('processing', 'Speaking...', 'Playing synthesized audio response');
   const binary  = atob(b64);
   const bytes   = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -284,15 +322,16 @@ async function playWavBase64(b64) {
   src.buffer   = decoded;
   src.connect(ctx.destination);
   src.start();
-  src.onended  = () => ctx.close();
+  src.onended  = () => {
+    ctx.close();
+    setVoiceState('standby', 'System Standby', 'Ready for next query');
+  };
 }
 
 // ── Browser TTS fallback ──────────────────────────────────────────────────────
 
 /**
  * Normalize text before handing it to speechSynthesis.
- * Special characters adjacent to digits (₹, °, /) break number recognition
- * in many browser TTS engines, causing "5000" to be read as "five zero zero zero".
  */
 function normalizeSpeechText(text, language) {
   let t = text;
@@ -340,6 +379,16 @@ function speakBrowser(text, language) {
   const match   = voices.find(v => v.lang.startsWith(utter.lang.slice(0, 5)));
   if (match) utter.voice = match;
 
+  utter.onstart = () => {
+    setVoiceState('processing', 'Speaking...', 'Speaking browser TTS response');
+  };
+  utter.onend = () => {
+    setVoiceState('standby', 'System Standby', 'Ready for next query');
+  };
+  utter.onerror = () => {
+    setVoiceState('standby', 'System Standby', 'Ready for next query');
+  };
+
   window.speechSynthesis.speak(utter);
 }
 
@@ -349,8 +398,10 @@ const LANG_LABELS = { en: 'EN', hi: 'HI', es: 'ES' };
 
 function updateLangBadge(lang) {
   const label = LANG_LABELS[lang] || lang?.toUpperCase() || '?';
-  langBadge.textContent = label;
-  langBadge.className   = `badge ${lang || 'en'}`;
+  langBadge.className = `badge ${lang || 'en'}`;
+  const textEl = langBadge.querySelector('.badge-text');
+  if (textEl) textEl.textContent = label;
+  else langBadge.textContent = label;
 }
 
 function setStatus(msg, isError) {
@@ -369,7 +420,20 @@ function buildBubble(text, lang, role) {
   const row = document.createElement('div');
   row.className = `msg-row ${role}`;
   row.innerHTML = `
-    <div class="msg-avatar">${isUser ? '🧑' : '🤖'}</div>
+    <div class="msg-avatar">
+      ${isUser ? `
+        <svg class="msg-avatar-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+          <circle cx="12" cy="7" r="4"></circle>
+        </svg>
+      ` : `
+        <svg class="msg-avatar-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+          <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
+          <line x1="12" y1="19" x2="12" y2="22"></line>
+        </svg>
+      `}
+    </div>
     <div class="msg-bubble">
       <div class="msg-meta">
         <span>${isUser ? 'You' : 'Agent'}</span>
@@ -419,7 +483,13 @@ function showTypingIndicator() {
   _typingRow = document.createElement('div');
   _typingRow.className = 'msg-row agent typing-indicator';
   _typingRow.innerHTML = `
-    <div class="msg-avatar">🤖</div>
+    <div class="msg-avatar">
+      <svg class="msg-avatar-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+        <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
+        <line x1="12" y1="19" x2="12" y2="22"></line>
+      </svg>
+    </div>
     <div class="msg-bubble">
       <div class="msg-meta"><span>Agent</span></div>
       <div class="msg-text">
@@ -437,6 +507,148 @@ function removeTypingIndicator() {
   if (_typingRow) { _typingRow.remove(); _typingRow = null; }
 }
 
+// ── Tab Navigation Controllers ───────────────────────────────────────────────
+window.switchMemoryTab = function(tabName) {
+  const cardsBtn = document.getElementById('tab-btn-cards');
+  const jsonBtn = document.getElementById('tab-btn-json');
+  const cardsContent = document.getElementById('mem-tab-cards');
+  const jsonContent = document.getElementById('mem-tab-json');
+  
+  if (tabName === 'cards') {
+    cardsBtn.classList.add('active');
+    jsonBtn.classList.remove('active');
+    cardsContent.classList.add('active');
+    jsonContent.classList.remove('active');
+  } else {
+    cardsBtn.classList.remove('active');
+    jsonBtn.classList.add('active');
+    cardsContent.classList.remove('active');
+    jsonContent.classList.add('active');
+  }
+};
+
+window.switchScenarioTab = function(scenarioNum) {
+  // Update scenario tabs
+  const buttons = document.querySelectorAll('.scenario-tab-btn');
+  buttons.forEach((btn, index) => {
+    if (index + 1 === scenarioNum) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+
+  // Update scenario group contents
+  const groups = document.querySelectorAll('.scenario-group');
+  groups.forEach((grp) => {
+    if (grp.id === `scenario-grp-${scenarioNum}`) {
+      grp.classList.add('active');
+    } else {
+      grp.classList.remove('active');
+    }
+  });
+};
+
+// ── Dynamic Memory Card Rendering ───────────────────────────────────────────
+function renderMemoryCards(structured) {
+  const container = document.getElementById('memory-cards-container');
+  if (!container) return;
+  container.innerHTML = '';
+
+  let hasData = false;
+
+  // 1. Order Tracking Card
+  if (structured.order_id || structured.email || structured.order_status) {
+    hasData = true;
+    const card = document.createElement('div');
+    card.className = 'mem-card';
+    
+    let fields = '';
+    if (structured.order_id) fields += `<div class="mem-label">Order ID</div><div class="mem-val">${escapeHtml(structured.order_id)}</div>`;
+    if (structured.email) fields += `<div class="mem-label">Email</div><div class="mem-val">${escapeHtml(structured.email)}</div>`;
+    if (structured.order_status) fields += `<div class="mem-label">Status</div><div class="mem-val" style="color:var(--green)">${escapeHtml(structured.order_status)}</div>`;
+    if (structured.estimated_delivery) fields += `<div class="mem-label">Delivery</div><div class="mem-val">${escapeHtml(structured.estimated_delivery)}</div>`;
+    if (structured.tracking_link) fields += `<div class="mem-label">Tracking</div><div class="mem-val"><a href="${escapeHtml(structured.tracking_link)}" target="_blank">Track Shipment ↗</a></div>`;
+    if (structured.refund_policy) fields += `<div class="mem-label">Refunds</div><div class="mem-val" style="color:var(--text-secondary);font-size:0.72rem">${escapeHtml(structured.refund_policy)}</div>`;
+
+    card.innerHTML = `
+      <div class="mem-card-title">
+        <svg class="mem-card-icon order" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+        <span>Order Tracking</span>
+      </div>
+      <div class="mem-fields-grid">${fields}</div>
+    `;
+    container.appendChild(card);
+  }
+
+  // 2. Hotel Booking Card
+  if (structured.hotel_city || structured.hotel_dates || structured.hotel_budget) {
+    hasData = true;
+    const card = document.createElement('div');
+    card.className = 'mem-card';
+    
+    let fields = '';
+    if (structured.hotel_city) fields += `<div class="mem-label">City</div><div class="mem-val">${escapeHtml(structured.hotel_city)}</div>`;
+    if (structured.hotel_dates) fields += `<div class="mem-label">Dates</div><div class="mem-val">${escapeHtml(structured.hotel_dates)}</div>`;
+    if (structured.hotel_people) fields += `<div class="mem-label">Guests</div><div class="mem-val">${escapeHtml(structured.hotel_people)}</div>`;
+    if (structured.hotel_budget) fields += `<div class="mem-label">Budget</div><div class="mem-val">₹${escapeHtml(structured.hotel_budget)}/night</div>`;
+    if (structured.selected_hotel_option) fields += `<div class="mem-label">Selection</div><div class="mem-val" style="color:var(--accent);font-weight:700;">${escapeHtml(structured.selected_hotel_option)}</div>`;
+    
+    if (structured.hotel_options && structured.hotel_options.length > 0) {
+      let optItems = '';
+      structured.hotel_options.forEach((opt, idx) => {
+        const isSelected = structured.selected_hotel_option && opt.name && opt.name.toLowerCase().includes(structured.selected_hotel_option.toLowerCase());
+        const style = isSelected ? 'color:var(--green);font-weight:700;' : '';
+        const check = isSelected ? '✓ ' : '';
+        optItems += `<div class="mem-hotel-item" style="${style}"><span>${check}${idx+1}. ${escapeHtml(opt.name || 'Option')}</span><span>₹${escapeHtml(opt.price)}/n</span></div>`;
+      });
+      fields += `<div class="mem-hotel-list">${optItems}</div>`;
+    }
+
+    card.innerHTML = `
+      <div class="mem-card-title">
+        <svg class="mem-card-icon hotel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+        <span>Hotel Booking</span>
+      </div>
+      <div class="mem-fields-grid">${fields}</div>
+    `;
+    container.appendChild(card);
+  }
+
+  // 3. Weather Card
+  if (structured.weather_cities && structured.weather_cities.length > 0) {
+    hasData = true;
+    const card = document.createElement('div');
+    card.className = 'mem-card';
+    
+    const weatherData = {
+      mumbai: '32°C, Warm & Humid',
+      delhi: '36°C, Hot & Dry',
+      chennai: '33°C, Warm & Breezy'
+    };
+    
+    let fields = '';
+    structured.weather_cities.forEach(city => {
+      const cleanCity = city.toLowerCase().trim();
+      const info = weatherData[cleanCity] || 'Temp N/A';
+      fields += `<div class="mem-label">${city}</div><div class="mem-val">${escapeHtml(info)}</div>`;
+    });
+
+    card.innerHTML = `
+      <div class="mem-card-title">
+        <svg class="mem-card-icon weather" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z"></path></svg>
+        <span>Weather Info</span>
+      </div>
+      <div class="mem-fields-grid">${fields}</div>
+    `;
+    container.appendChild(card);
+  }
+
+  if (!hasData) {
+    container.innerHTML = '<div class="memory-empty-state">No structured memory extracted yet. Try scenario tests.</div>';
+  }
+}
+
 function renderMemory(mem) {
   const structured = mem?.structured || mem || {};
   // Filter out null/undefined/empty values for display
@@ -444,6 +656,24 @@ function renderMemory(mem) {
     Object.entries(structured).filter(([, v]) => v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0))
   );
   memoryPre.textContent = JSON.stringify(filtered, null, 2);
+  renderMemoryCards(structured);
+}
+
+// ── Telemetry Indicators Rendering ──────────────────────────────────────────
+function updateLatencyMeters(data) {
+  document.getElementById('lat-total-val').textContent = fmt(data.total_latency_ms) + (data.total_latency_ms != null ? ' ms' : '');
+  document.getElementById('lat-stt-val').textContent = fmt(data.stt_latency_ms) + (data.stt_latency_ms != null ? ' ms' : '');
+  document.getElementById('lat-llm-val').textContent = fmt(data.llm_total_ms) + (data.llm_total_ms != null ? ' ms' : '');
+  document.getElementById('lat-tts-val').textContent = fmt(data.tts_latency_ms) + (data.tts_latency_ms != null ? ' ms' : '');
+
+  const stt = data.stt_latency_ms || 0;
+  const llm = data.llm_total_ms || 0;
+  const tts = data.tts_latency_ms || 0;
+  const max = Math.max(stt, llm, tts, 500); // Floor of 500ms for scale ratio
+
+  document.getElementById('lat-stt-bar').style.width = (stt / max) * 100 + '%';
+  document.getElementById('lat-llm-bar').style.width = (llm / max) * 100 + '%';
+  document.getElementById('lat-tts-bar').style.width = (tts / max) * 100 + '%';
 }
 
 function renderLatency(data) {
@@ -453,6 +683,10 @@ function renderLatency(data) {
   // Keep only last 10 rows
   if (latencyRows.length > 10) latencyRows.shift();
 
+  // Render modern summary and progress meters
+  updateLatencyMeters(data);
+
+  // Render history table
   latencyTbody.innerHTML = '';
   for (const row of latencyRows) {
     const tr = document.createElement('tr');
@@ -462,7 +696,7 @@ function renderLatency(data) {
       <td class="num">${fmt(d.stt_latency_ms)}</td>
       <td class="num">${fmt(d.llm_total_ms)}</td>
       <td class="num">${fmt(d.tts_latency_ms)}</td>
-      <td class="num">${fmt(d.total_latency_ms)}</td>
+      <td class="num total">${fmt(d.total_latency_ms)}</td>
     `;
     latencyTbody.appendChild(tr);
   }
@@ -528,3 +762,4 @@ if (window.speechSynthesis) {
 }
 
 connectWS();
+setVoiceState('standby', 'System Standby', 'Awaiting connection to server...');
