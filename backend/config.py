@@ -18,7 +18,7 @@ class Settings:
     OPENROUTER_APP_NAME: str = os.getenv("OPENROUTER_APP_NAME", "polyglot-voice-agent")
 
     # ── STT ────────────────────────────────────────────────────────────────
-    WHISPER_MODEL_SIZE: str = os.getenv("WHISPER_MODEL_SIZE", "base")
+    WHISPER_MODEL_SIZE: str = os.getenv("WHISPER_MODEL_SIZE", "tiny")
 
     # ── TTS (Piper) ────────────────────────────────────────────────────────
     PIPER_EXECUTABLE: str = os.getenv("PIPER_EXECUTABLE", "piper")

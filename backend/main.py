@@ -274,49 +274,61 @@ async def _process_turn(
     # 3. Add user message to rolling history
     session.memory.add_message("user", text)
 
-    # 4. LLM generation
+    # 4. Stream LLM — flush to TTS sentence-by-sentence for lowest first-audio latency
     tracker.mark("llm_request_started_at")
-    llm_result = await llm.generate(session.memory.chat_history, system_prompt)
+    full_text   = ""
+    buffer      = ""
+    first_audio = False   # True once the first TTS chunk has been dispatched
+
+    async for token in llm.generate_stream(session.memory.chat_history, system_prompt):
+        if not full_text:
+            tracker.mark("llm_first_token_at")
+        full_text += token
+        buffer    += token
+
+        # Flush on sentence boundary.
+        # Require ≥15 chars before splitting to avoid false breaks on "Rs. 4500" etc.
+        sentence = buffer.strip()
+        if len(sentence) >= 15 and sentence[-1] in ".!?।":
+            buffer = ""
+            if not first_audio:
+                tracker.mark("tts_request_started_at")
+            audio = await tts.synthesize(sentence, language)
+            if not first_audio:
+                tracker.mark("tts_first_audio_at")
+                tracker.mark("audio_playback_started_at")
+                first_audio = True
+            if audio:
+                await send({"type": "audio_response", "data": base64.b64encode(audio).decode("ascii"), "format": "wav", "tts_mode": "piper"})
+            else:
+                await send({"type": "tts_browser", "text": sentence, "language": language})
+
     tracker.mark("llm_completed_at")
-    # If the provider recorded a first-token time, back-fill it
-    if llm_result.llm_first_token_at is not None:
-        tracker.mark("llm_first_token_at")
-    else:
-        # For non-streaming calls, first_token == completed
-        tracker.mark("llm_first_token_at")
 
-    session.memory.add_message("assistant", llm_result.text)
+    # 5. Flush any remaining partial sentence (no trailing punctuation)
+    remainder = buffer.strip()
+    if remainder:
+        if not first_audio:
+            tracker.mark("tts_request_started_at")
+        audio = await tts.synthesize(remainder, language)
+        if not first_audio:
+            tracker.mark("tts_first_audio_at")
+            tracker.mark("audio_playback_started_at")
+            first_audio = True
+        if audio:
+            await send({"type": "audio_response", "data": base64.b64encode(audio).decode("ascii"), "format": "wav", "tts_mode": "piper"})
+        else:
+            await send({"type": "tts_browser", "text": remainder, "language": language})
 
-    await send({
-        "type":     "agent_response",
-        "text":     llm_result.text,
-        "language": language,
-    })
+    # 6. Push full response for display + memory
+    full_text = full_text.strip()
+    session.memory.add_message("assistant", full_text)
 
-    # 5. TTS
-    tracker.mark("tts_request_started_at")
-    audio_bytes = await tts.synthesize(llm_result.text, language)
-    tracker.mark("tts_first_audio_at")
-
-    if audio_bytes:
-        await send({
-            "type":     "audio_response",
-            "data":     base64.b64encode(audio_bytes).decode("ascii"),
-            "format":   "wav",
-            "tts_mode": "piper",
-        })
-    else:
-        # Signal the frontend to use browser speechSynthesis
-        await send({
-            "type":     "tts_browser",
-            "text":     llm_result.text,
-            "language": language,
-        })
-
-    # 6. Push memory + latency to UI
+    await send({"type": "agent_response", "text": full_text, "language": language})
     await send({"type": "memory_update", "memory": session.memory.to_dict()})
 
-    tracker.mark("audio_playback_started_at")
+    if not first_audio:
+        tracker.mark("audio_playback_started_at")
     await send({"type": "latency_update", "data": tracker.to_summary()})
 
 

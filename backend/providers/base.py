@@ -41,6 +41,11 @@ class LLMProvider(ABC):
         """Generate a response given a chat history and system prompt."""
         ...
 
+    async def generate_stream(self, messages: list[dict], system_prompt: str):
+        """Stream response tokens. Default: wraps generate() — yields full text as one chunk."""
+        result = await self.generate(messages, system_prompt)
+        yield result.text
+
 
 class TTSProvider(ABC):
     @abstractmethod

@@ -6,6 +6,7 @@ Auth:     Authorization: Bearer <OPENROUTER_API_KEY>
           HTTP-Referer: <OPENROUTER_SITE_URL>
           X-Title: <OPENROUTER_APP_NAME>
 """
+import json
 import logging
 import time
 from typing import Optional
@@ -106,3 +107,50 @@ class OpenRouterLLMProvider(LLMProvider):
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    async def generate_stream(self, messages: list[dict], system_prompt: str):
+        """Stream tokens via OpenRouter SSE. Yields str chunks as they arrive."""
+        if not self._settings.OPENROUTER_API_KEY:
+            yield "API key not configured. Please set OPENROUTER_API_KEY in your .env file."
+            return
+
+        full_messages = [{"role": "system", "content": system_prompt}] + messages
+        payload = {
+            "model":       self._settings.OPENROUTER_MODEL,
+            "messages":    full_messages,
+            "max_tokens":  300,
+            "temperature": 0.7,
+            "stream":      True,
+        }
+
+        try:
+            client = self._get_client()
+            async with client.stream(
+                "POST", CHAT_ENDPOINT,
+                json=payload, headers=self._client_headers(),
+                timeout=30.0,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        token = (chunk["choices"][0]["delta"].get("content") or "")
+                        if token:
+                            yield token
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"OpenRouter stream HTTP {e.response.status_code}: {e.response.text[:200]}")
+            yield "I'm sorry, the language model returned an error. Please try again."
+        except httpx.TimeoutException:
+            logger.error("OpenRouter stream timed out.")
+            yield "I'm sorry, the response timed out. Please try again."
+        except Exception as e:
+            logger.error(f"OpenRouter stream error: {e}", exc_info=True)
+            yield "I'm sorry, something went wrong. Please try again."
