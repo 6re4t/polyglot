@@ -34,6 +34,7 @@ import base64
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -276,20 +277,28 @@ async def _process_turn(
 
     # 4. Stream LLM — flush to TTS sentence-by-sentence for lowest first-audio latency
     tracker.mark("llm_request_started_at")
-    full_text   = ""
-    buffer      = ""
-    first_audio = False   # True once the first TTS chunk has been dispatched
+    full_text       = ""
+    buffer          = ""
+    first_audio     = False
+    last_flush_time = None   # set on first token; used for time-based safety flush
 
     async for token in llm.generate_stream(session.memory.chat_history, system_prompt):
         if not full_text:
             tracker.mark("llm_first_token_at")
+            last_flush_time = time.perf_counter()
         full_text += token
         buffer    += token
 
-        # Flush on sentence boundary.
-        # Require ≥15 chars before splitting to avoid false breaks on "Rs. 4500" etc.
         sentence = buffer.strip()
-        if len(sentence) >= 15 and sentence[-1] in ".!?।":
+        elapsed  = time.perf_counter() - last_flush_time if last_flush_time else 0
+
+        # Flush when: sentence boundary hit (≥15 chars) OR buffer stalled ≥1.2 s with ≥30 chars
+        should_flush = (
+            (len(sentence) >= 15 and sentence[-1] in ".!?।") or
+            (len(sentence) >= 30 and elapsed >= 1.2)
+        )
+        if should_flush:
+            last_flush_time = time.perf_counter()
             buffer = ""
             if not first_audio:
                 tracker.mark("tts_request_started_at")
