@@ -42,6 +42,14 @@ let   vadHasSpeech    = false;
 let   vadSpeechStart  = null;
 let   vadSilenceStart = null;
 
+// ── Barge-in / interrupt state ───────────────────────────────────────────────
+const BARGE_THRESHOLD = 0.020;   // RMS above this during TTS = user is speaking
+let   isSpeaking      = false;   // true while agent speechSynthesis is active
+let   bargeinStream   = null;
+let   bargeinCtx      = null;
+let   bargeinSrc      = null;
+let   bargeinNode     = null;
+
 // ── DOM refs ────────────────────────────────────────────────────────────────
 const micBtn        = document.getElementById('mic-btn');
 const stopBtn       = document.getElementById('stop-btn');
@@ -129,6 +137,8 @@ function handleMessage(msg) {
 
     case 'transcript':
       if (window.speechSynthesis) window.speechSynthesis.cancel(); // stop previous agent speech
+      isSpeaking = false;
+      stopBargeinMonitor();
       setStatus(`Transcribed [${msg.language?.toUpperCase()}]: "${msg.text}"`, false);
       setVoiceState('processing', 'Thinking...', 'Awaiting LLM generation...');
       addUserBubble(msg.text, msg.language || 'en');
@@ -185,6 +195,12 @@ stopBtn.addEventListener('click', stopRecording);
 
 async function startRecording() {
   if (isRecording) return;
+  // Barge-in: cancel any in-progress agent speech before acquiring the mic
+  if (isSpeaking || (window.speechSynthesis && window.speechSynthesis.speaking)) {
+    window.speechSynthesis.cancel();
+    isSpeaking = false;
+    stopBargeinMonitor();
+  }
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   } catch (e) {
@@ -418,16 +434,65 @@ function speakBrowser(text, language) {
   if (match) utter.voice = match;
 
   utter.onstart = () => {
-    setVoiceState('processing', 'Speaking...', 'Speaking browser TTS response');
+    isSpeaking = true;
+    setVoiceState('processing', 'Speaking...', 'Agent speaking — click mic or speak to interrupt');
+    startBargeinMonitor();  // listen for user interruption
   };
   utter.onend = () => {
-    setVoiceState('standby', 'System Standby', 'Ready for next query');
+    // Streaming queues multiple utterances — only go idle when all are done
+    setTimeout(() => {
+      if (!window.speechSynthesis.speaking) {
+        isSpeaking = false;
+        stopBargeinMonitor();
+        setVoiceState('standby', 'System Standby', 'Ready for next query');
+      }
+    }, 50);
   };
   utter.onerror = () => {
+    isSpeaking = false;
+    stopBargeinMonitor();
     setVoiceState('standby', 'System Standby', 'Ready for next query');
   };
 
   window.speechSynthesis.speak(utter);
+}
+
+// ── Barge-in monitor (continuous mic energy watch during agent speech) ────────
+
+async function startBargeinMonitor() {
+  if (bargeinStream || isRecording) return;  // already running or user is recording
+  try {
+    bargeinStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    bargeinCtx    = new (window.AudioContext || window.webkitAudioContext)();
+    bargeinSrc    = bargeinCtx.createMediaStreamSource(bargeinStream);
+    bargeinNode   = bargeinCtx.createScriptProcessor(2048, 1, 1);
+    bargeinNode.onaudioprocess = (e) => {
+      if (!isSpeaking || isRecording) { stopBargeinMonitor(); return; }
+      const data = e.inputBuffer.getChannelData(0);
+      let sumSq = 0;
+      for (let i = 0; i < data.length; i++) sumSq += data[i] ** 2;
+      if (Math.sqrt(sumSq / data.length) > BARGE_THRESHOLD) {
+        isSpeaking = false;  // prevent re-trigger
+        setTimeout(() => {
+          stopBargeinMonitor();
+          if (window.speechSynthesis) window.speechSynthesis.cancel();
+          startRecording();
+        }, 0);
+      }
+    };
+    bargeinSrc.connect(bargeinNode);
+    bargeinNode.connect(bargeinCtx.destination);
+  } catch {
+    // Mic unavailable — barge-in silently disabled
+    bargeinStream = null;
+  }
+}
+
+function stopBargeinMonitor() {
+  if (bargeinNode)   { try { bargeinNode.disconnect(); } catch {} bargeinNode.onaudioprocess = null; bargeinNode = null; }
+  if (bargeinSrc)    { try { bargeinSrc.disconnect();  } catch {} bargeinSrc  = null; }
+  if (bargeinStream) { bargeinStream.getTracks().forEach(t => t.stop()); bargeinStream = null; }
+  if (bargeinCtx)    { bargeinCtx.close().catch(() => {}); bargeinCtx = null; }
 }
 
 // ── Chat bubble helpers ───────────────────────────────────────────────────────
