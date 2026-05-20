@@ -49,6 +49,8 @@ let   bargeinStream   = null;
 let   bargeinCtx      = null;
 let   bargeinSrc      = null;
 let   bargeinNode     = null;
+let   analyserNode    = null;   // Web Audio analyser for waveform visualization
+let   waveformAnimId  = null;   // requestAnimationFrame handle
 
 // ── DOM refs ────────────────────────────────────────────────────────────────
 const micBtn        = document.getElementById('mic-btn');
@@ -63,6 +65,8 @@ const statusBar     = document.getElementById('status-bar');
 const chatThread    = document.getElementById('chat-thread');
 const memoryPre     = document.getElementById('memory-pre');
 const latencyTbody  = document.getElementById('latency-tbody');
+const waveCanvas    = document.getElementById('waveform-canvas');
+const waveCtx       = waveCanvas ? waveCanvas.getContext('2d') : null;
 
 // ── Voice State Visualizer Helper ──────────────────────────────────────────
 function setVoiceState(state, title, desc) {
@@ -208,6 +212,56 @@ function handleMessage(msg) {
 
 // ── Microphone recording ──────────────────────────────────────────────────────
 
+// ── Waveform drawing ────────────────────────────────────────────────────────────────
+
+function startWaveform(src, ctx) {
+  if (!waveCanvas || !waveCtx) return;
+  analyserNode = ctx.createAnalyser();
+  analyserNode.fftSize = 2048;
+  src.connect(analyserNode);          // tap the mic signal (read-only)
+
+  waveCanvas.style.display = 'block';
+  waveCanvas.width  = waveCanvas.offsetWidth  || 280;
+  waveCanvas.height = waveCanvas.offsetHeight || 56;
+
+  const W = waveCanvas.width, H = waveCanvas.height;
+  const bufLen = analyserNode.fftSize;
+  const data   = new Uint8Array(bufLen);
+
+  const grad = waveCtx.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0,    'rgba(99,102,241,0.1)');
+  grad.addColorStop(0.25, 'rgba(99,102,241,1)');
+  grad.addColorStop(0.75, 'rgba(167,139,250,1)');
+  grad.addColorStop(1,    'rgba(167,139,250,0.1)');
+
+  function draw() {
+    waveformAnimId = requestAnimationFrame(draw);
+    analyserNode.getByteTimeDomainData(data);
+    waveCtx.clearRect(0, 0, W, H);
+    waveCtx.lineWidth    = 2;
+    waveCtx.shadowBlur   = 8;
+    waveCtx.shadowColor  = 'rgba(167,139,250,0.7)';
+    waveCtx.strokeStyle  = grad;
+    waveCtx.beginPath();
+    const sliceW = W / bufLen;
+    for (let i = 0; i < bufLen; i++) {
+      const y = (data[i] / 128.0) * H / 2;
+      i === 0 ? waveCtx.moveTo(0, y) : waveCtx.lineTo(i * sliceW, y);
+    }
+    waveCtx.lineTo(W, H / 2);
+    waveCtx.stroke();
+    waveCtx.shadowBlur = 0;
+  }
+  draw();
+}
+
+function stopWaveform() {
+  if (waveformAnimId) { cancelAnimationFrame(waveformAnimId); waveformAnimId = null; }
+  if (analyserNode)   { try { analyserNode.disconnect(); } catch {} analyserNode = null; }
+  if (waveCanvas)     { waveCanvas.style.display = 'none'; }
+  if (waveCtx && waveCanvas) { waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height); }
+}
+
 micBtn.addEventListener('click', () => {
   if (isRecording) stopRecording();
   else startRecording();
@@ -271,6 +325,7 @@ async function startRecording() {
 
   sourceNode.connect(scriptNode);
   scriptNode.connect(audioCtx.destination);
+  startWaveform(sourceNode, audioCtx);
 
   isRecording = true;
   setMicBtnRecording(true);
@@ -285,6 +340,7 @@ async function stopRecording() {
 
   // Reset VAD state
   vadHasSpeech = false; vadSpeechStart = null; vadSilenceStart = null;
+  stopWaveform();
   // Disconnect audio graph
   if (scriptNode)  { scriptNode.disconnect(); scriptNode.onaudioprocess = null; }
   if (sourceNode)  { sourceNode.disconnect(); }

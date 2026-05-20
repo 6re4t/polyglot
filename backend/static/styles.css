@@ -465,6 +465,16 @@ header h1 {
   color: var(--text-secondary);
 }
 
+/* Waveform Canvas */
+.waveform-canvas {
+  width: 100%;
+  height: 56px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  display: none;
+  margin-bottom: 0.5rem;
+}
+
 /* Voice Buttons */
 .voice-buttons-container {
   display: flex;
