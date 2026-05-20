@@ -34,6 +34,14 @@ let turnCounter    = 0;
 let latencyRows    = [];   // Array of latency summary objects for the table
 let pendingUserBubble = null;  // user bubble shown before transcript arrives
 
+// ── VAD state (auto-stop on silence) ────────────────────────────────────────────
+const VAD_SPEECH_THRESHOLD = 0.015; // RMS energy: above = speech, below = silence
+const VAD_SILENCE_MS       = 900;   // ms of continuous silence to trigger auto-stop
+const VAD_MIN_SPEECH_MS    = 400;   // don’t start silence countdown until user has spoken this long
+let   vadHasSpeech    = false;
+let   vadSpeechStart  = null;
+let   vadSilenceStart = null;
+
 // ── DOM refs ────────────────────────────────────────────────────────────────
 const micBtn        = document.getElementById('mic-btn');
 const stopBtn       = document.getElementById('stop-btn');
@@ -194,9 +202,35 @@ async function startRecording() {
   scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
   pcmSamples = [];
 
+  // Reset VAD state for this recording session
+  vadHasSpeech = false; vadSpeechStart = null; vadSilenceStart = null;
+
   scriptNode.onaudioprocess = (e) => {
     const channelData = e.inputBuffer.getChannelData(0);
     pcmSamples.push(new Float32Array(channelData));
+
+    // VAD: compute RMS energy of this buffer
+    let sumSq = 0;
+    for (let i = 0; i < channelData.length; i++) sumSq += channelData[i] ** 2;
+    const rms = Math.sqrt(sumSq / channelData.length);
+    const now = Date.now();
+
+    if (rms > VAD_SPEECH_THRESHOLD) {
+      // Speech energy detected
+      if (!vadHasSpeech) { vadHasSpeech = true; vadSpeechStart = now; }
+      vadSilenceStart = null;  // reset silence clock
+      setVoiceState('recording', 'Listening…', 'Voice detected — keep speaking…');
+    } else if (vadHasSpeech) {
+      // Silence after speech
+      if (!vadSilenceStart) vadSilenceStart = now;
+      const speechDuration  = now - vadSpeechStart;
+      const silenceDuration = now - vadSilenceStart;
+      if (speechDuration >= VAD_MIN_SPEECH_MS && silenceDuration >= VAD_SILENCE_MS) {
+        stopRecording();   // ← auto-stop
+      } else if (speechDuration >= VAD_MIN_SPEECH_MS) {
+        setVoiceState('recording', 'Listening…', 'Silence detected — finishing…');
+      }
+    }
   };
 
   sourceNode.connect(scriptNode);
@@ -207,14 +241,16 @@ async function startRecording() {
   micBtn.disabled = true;
   stopBtn.disabled = false;
   
-  setStatus('Recording… press Stop when done.', false);
-  setVoiceState('recording', 'Listening...', 'Awaiting voice inputs...');
+  setStatus('Recording… speak now (auto-stops on silence).', false);
+  setVoiceState('recording', 'Listening…', 'Waiting for voice…');
 }
 
 async function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
 
+  // Reset VAD state
+  vadHasSpeech = false; vadSpeechStart = null; vadSilenceStart = null;
   // Disconnect audio graph
   if (scriptNode)  { scriptNode.disconnect(); scriptNode.onaudioprocess = null; }
   if (sourceNode)  { sourceNode.disconnect(); }
