@@ -2,6 +2,11 @@
 
 A real-time multilingual voice companion that supports English, Hindi, and Spanish. Language switches are detected within 1–2 utterances using local STT (faster-whisper) with rule-based overrides. Conversation context is preserved across language switches. Audio stays local; only the final transcript and memory go to OpenRouter.
 
+**Latency target:** under 1.2 s end-of-speech → start-of-agent-speech (stretch: under 800 ms), achieved via:
+- `tiny` Whisper model (~250 ms STT on CPU)
+- Sentence-level LLM streaming — browser TTS starts on the *first* sentence, not after the full response
+- Urdu/Hindi disambiguation — `ur` detections are re-transcribed in Devanagari automatically
+
 ---
 
 ## Architecture Summary
@@ -58,7 +63,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Note:** `faster-whisper` downloads the Whisper model on first run (~74 MB for `base`).
+> **Note:** `faster-whisper` downloads the Whisper model on first run (~39 MB for `tiny`).
 > This happens automatically when you first send audio.
 
 ### 4 — Configure environment
@@ -80,6 +85,13 @@ OPENROUTER_MODEL=google/gemini-2.5-flash
 ### 5 — Run the backend
 
 ```bash
+# Recommended — single command from the project root
+python run.py
+
+# Or without hot-reload (slightly faster startup)
+python run.py --no-reload
+
+# Or manually from the backend directory
 cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -107,12 +119,14 @@ Click any scenario turn button at the bottom of the page to automatically send t
 ### Dashboard panels
 | Panel | Shows |
 |---|---|
-| Language badge (top right) | Active language: EN / HI / ES |
+| Voice Hub (left column) | Mic state (standby / recording / processing), Record + Stop buttons |
+| Language badge | Active language: EN / HI / ES |
 | TTS badge | `Piper` or `browser` |
-| Transcript | Each user utterance with language colour-coding |
-| Agent Response | Each LLM response |
-| Conversation Memory | Live JSON of structured memory state |
-| Latency table | STT / LLM / TTS / Total per turn |
+| Chat thread (centre) | Turn-by-turn bubbles — user (right) and agent (left) with typing indicator |
+| Memory cards (right, Cards tab) | Order tracking, Hotel booking, Weather — live structured memory |
+| Memory JSON (right, JSON tab) | Raw memory object |
+| Telemetry meters | STT / LLM / TTS breakdown bars + total latency per turn |
+| Scenario buttons (bottom) | Pre-loaded test turns for all 4 scenarios |
 
 ---
 
@@ -149,7 +163,7 @@ Each turn prints: user input, detected language, agent response, populated memor
 | `OPENROUTER_MODEL` | `google/gemini-2.5-flash` | Model to use. Options: `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku`, `qwen/qwen-2.5-7b-instruct` |
 | `OPENROUTER_SITE_URL` | `http://localhost:8000` | Sent as `HTTP-Referer` header |
 | `OPENROUTER_APP_NAME` | `polyglot-voice-agent` | Sent as `X-Title` header |
-| `WHISPER_MODEL_SIZE` | `base` | Whisper model: `tiny`, `base`, `small`, `medium`, `large-v2` |
+| `WHISPER_MODEL_SIZE` | `tiny` | Whisper model: `tiny`, `base`, `small`, `medium`, `large-v2` |
 | `PIPER_EXECUTABLE` | `piper` | Path to Piper binary |
 | `PIPER_VOICE_PATH_EN` | _(empty)_ | Path to English `.onnx` voice model |
 | `PIPER_VOICE_PATH_HI` | _(empty)_ | Path to Hindi `.onnx` voice model |
@@ -205,18 +219,19 @@ The TTS badge in the browser will switch from `browser` to `Piper`.
 
 ```
 polyglot-voice-agent/
+├── run.py                        # Single-command launcher (python run.py)
 ├── backend/
-│   ├── main.py                   # FastAPI app + WebSocket pipeline
+│   ├── main.py                   # FastAPI app + streaming WebSocket pipeline
 │   ├── config.py                 # Settings from .env
 │   ├── session.py                # Per-tab session state
 │   ├── providers/
-│   │   ├── base.py               # Abstract STT / LLM / TTS interfaces
-│   │   ├── stt_faster_whisper.py # Local STT + language detection
-│   │   ├── llm_openrouter.py     # OpenRouter async client
+│   │   ├── base.py               # Abstract STT / LLM / TTS interfaces (+ generate_stream)
+│   │   ├── stt_faster_whisper.py # Local STT + language detection + ur→hi remap
+│   │   ├── llm_openrouter.py     # OpenRouter async client with SSE streaming
 │   │   ├── tts_piper.py          # Piper TTS (Python API + CLI fallback)
 │   │   └── mock.py               # Mock providers for testing
 │   ├── services/
-│   │   ├── language_router.py    # Whisper + rule-based language routing
+│   │   ├── language_router.py    # Whisper + rule-based language routing (ur→hi alias)
 │   │   ├── memory.py             # StructuredMemory + rolling history
 │   │   ├── mock_tools.py         # Order / hotel / weather data + regex extractor
 │   │   └── latency.py            # Per-turn latency tracker
