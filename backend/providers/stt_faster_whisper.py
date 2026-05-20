@@ -16,6 +16,8 @@ from typing import Optional
 
 import numpy as np
 
+import re
+
 from .base import STTProvider, STTResult
 
 logger = logging.getLogger(__name__)
@@ -118,43 +120,66 @@ class FasterWhisperSTTProvider(STTProvider):
             return audio[::ratio]
         return audio
 
-    def _transcribe_sync(self, audio_bytes: bytes) -> STTResult:
+    def _transcribe_sync(self, audio_bytes: bytes,
+                          hint_language: str | None = None) -> STTResult:
         """Blocking transcription — called from a thread-pool executor."""
         try:
             model = self._load_model()
             audio, sr = self._decode_audio(audio_bytes)
             audio = self._resample_to_16k(audio, sr)
 
+            # Pass 1: auto-detect (always run — gives the unbiased language signal)
             segments_gen, info = model.transcribe(
-                audio,
-                beam_size=5,
-                language=None,         # auto-detect
-                vad_filter=False,      # disabled: tiny model VAD is overly aggressive
+                audio, beam_size=5, language=None, vad_filter=False,
             )
-            # Materialise the lazy generator
-            segments = list(segments_gen)
-            transcript = " ".join(s.text.strip() for s in segments).strip()
-
+            segments     = list(segments_gen)
+            auto_text    = " ".join(s.text.strip() for s in segments).strip()
             detected_lang = info.language
-            lang_prob = float(info.language_probability)
+            lang_prob     = float(info.language_probability)
 
-            # Urdu ('ur') and Hindi ('hi') share the same spoken form (Hindustani).
-            # Re-transcribe with language='hi' so Whisper outputs Devanagari
-            # instead of Arabic/Urdu script.
-            if detected_lang == "ur":
-                logger.info("Whisper detected 'ur'; re-transcribing with language='hi' for Devanagari output.")
+            # Decide whether to also try a forced Hindi pass:
+            #   • Whisper flagged Urdu (same spoken language, wrong script)
+            #   • Confidence is low — model is unsure, Hindi is a good candidate
+            #   • Previous turn was Hindi (Hinglish utterances often score as low-conf EN)
+            # Exception: if auto-detect is confident (≥0.75) for EN/ES, trust it —
+            # this is what lets the user switch BACK to English effortlessly.
+            confident_non_hi = (lang_prob >= 0.75 and detected_lang in ("en", "es"))
+            need_hi_pass = (
+                detected_lang == "ur" or
+                lang_prob < 0.75 or
+                hint_language == "hi"
+            ) and not confident_non_hi
+
+            if need_hi_pass:
                 seg2, info2 = model.transcribe(
-                    audio,
-                    beam_size=5,
-                    language="hi",
-                    vad_filter=False,
+                    audio, beam_size=5, language="hi", vad_filter=False,
                 )
-                transcript = " ".join(s.text.strip() for s in seg2).strip()
-                detected_lang = "hi"
-                lang_prob = max(lang_prob, float(info2.language_probability))
+                hi_text = " ".join(s.text.strip() for s in seg2).strip()
+
+                # Devanagari in the output is a definitive signal — use it
+                has_devanagari = bool(re.search(r'[\u0900-\u097F]', hi_text))
+                if has_devanagari:
+                    logger.info(f"Devanagari detected in Hindi pass — using Hindi transcript.")
+                    return STTResult(
+                        text=hi_text, language="hi",
+                        language_probability=max(lang_prob, float(info2.language_probability)),
+                    )
+
+                # No Devanagari (Hinglish): use Hindi result only when
+                # the previous turn was Hindi AND it’s at least as long as auto
+                if hint_language == "hi" and hi_text and len(hi_text) >= len(auto_text):
+                    logger.info("Hinglish detected — keeping Hindi context.")
+                    return STTResult(
+                        text=hi_text, language="hi",
+                        language_probability=max(lang_prob, float(info2.language_probability)),
+                    )
+
+                # If Urdu was detected but Hindi pass gave nothing useful, normalise lang
+                if detected_lang == "ur":
+                    detected_lang = "hi"
 
             return STTResult(
-                text=transcript,
+                text=auto_text,
                 language=detected_lang,
                 language_probability=lang_prob,
             )
@@ -168,9 +193,12 @@ class FasterWhisperSTTProvider(STTProvider):
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    async def transcribe(self, audio_bytes: bytes, sample_rate: int = 16000) -> STTResult:
+    async def transcribe(self, audio_bytes: bytes, sample_rate: int = 16000,
+                          hint_language: str | None = None) -> STTResult:
         if not _FASTER_WHISPER_OK:
             logger.warning("faster-whisper unavailable — returning empty transcript.")
             return STTResult(text="", language="en", language_probability=0.0)
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._transcribe_sync, audio_bytes)
+        return await loop.run_in_executor(
+            None, self._transcribe_sync, audio_bytes, hint_language
+        )

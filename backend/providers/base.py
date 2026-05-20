@@ -30,7 +30,8 @@ class LLMResult:
 
 class STTProvider(ABC):
     @abstractmethod
-    async def transcribe(self, audio_bytes: bytes, sample_rate: int = 16000) -> STTResult:
+    async def transcribe(self, audio_bytes: bytes, sample_rate: int = 16000,
+                         hint_language: Optional[str] = None) -> STTResult:
         """Transcribe raw audio bytes → text + detected language."""
         ...
 

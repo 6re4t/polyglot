@@ -222,7 +222,8 @@ async def ws_endpoint(websocket: WebSocket, session_id: str):
 
 async def _process_audio(send, session, audio_bytes: bytes, tracker: LatencyTracker) -> None:
     tracker.mark("stt_started_at")
-    stt_result = await stt.transcribe(audio_bytes)
+    stt_result = await stt.transcribe(audio_bytes,
+                                      hint_language=session.memory.last_language)
     tracker.mark("stt_final_at")
 
     if not stt_result.text.strip():
