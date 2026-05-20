@@ -532,24 +532,41 @@ function speakBrowser(text, language) {
 // ── Barge-in monitor (continuous mic energy watch during agent speech) ────────
 
 async function startBargeinMonitor() {
-  if (bargeinStream || isRecording) return;  // already running or user is recording
+  if (bargeinStream || isRecording) return;
   try {
-    bargeinStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    bargeinCtx    = new (window.AudioContext || window.webkitAudioContext)();
-    bargeinSrc    = bargeinCtx.createMediaStreamSource(bargeinStream);
-    bargeinNode   = bargeinCtx.createScriptProcessor(2048, 1, 1);
+    // echoCancellation removes speaker bleed; autoGainControl off avoids AGC boosting quiet frames
+    bargeinStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false },
+      video: false
+    });
+    bargeinCtx  = new (window.AudioContext || window.webkitAudioContext)();
+    bargeinSrc  = bargeinCtx.createMediaStreamSource(bargeinStream);
+    bargeinNode = bargeinCtx.createScriptProcessor(2048, 1, 1);
+
+    // Give AEC time to lock on to the speaker signal before we start detecting
+    const readyAt = Date.now() + 500;
+    let   hits    = 0;   // consecutive frames above threshold required to fire
+
     bargeinNode.onaudioprocess = (e) => {
       if (!isSpeaking || isRecording) { stopBargeinMonitor(); return; }
+      if (Date.now() < readyAt) return;   // AEC warm-up — ignore early frames
+
       const data = e.inputBuffer.getChannelData(0);
       let sumSq = 0;
       for (let i = 0; i < data.length; i++) sumSq += data[i] ** 2;
+
       if (Math.sqrt(sumSq / data.length) > BARGE_THRESHOLD) {
-        isSpeaking = false;  // prevent re-trigger
-        setTimeout(() => {
-          stopBargeinMonitor();
-          if (window.speechSynthesis) window.speechSynthesis.cancel();
-          startRecording();
-        }, 0);
+        hits++;
+        if (hits >= 3) {   // ~128 ms of sustained speech required
+          isSpeaking = false;
+          setTimeout(() => {
+            stopBargeinMonitor();
+            if (window.speechSynthesis) window.speechSynthesis.cancel();
+            startRecording();
+          }, 0);
+        }
+      } else {
+        hits = 0;   // reset on any quiet frame
       }
     };
     bargeinSrc.connect(bargeinNode);
