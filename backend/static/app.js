@@ -120,6 +120,7 @@ function handleMessage(msg) {
       break;
 
     case 'transcript':
+      if (window.speechSynthesis) window.speechSynthesis.cancel(); // stop previous agent speech
       setStatus(`Transcribed [${msg.language?.toUpperCase()}]: "${msg.text}"`, false);
       setVoiceState('processing', 'Thinking...', 'Awaiting LLM generation...');
       addUserBubble(msg.text, msg.language || 'en');
@@ -366,7 +367,8 @@ function normalizeSpeechText(text, language) {
 
 function speakBrowser(text, language) {
   if (!window.speechSynthesis) return;
-  window.speechSynthesis.cancel();   // stop any previous utterance
+  // No cancel() here — streaming sends one sentence at a time and they must queue.
+  // Cancellation happens at turn-start in the 'transcript' handler instead.
 
   const langMap = { en: 'en-US', hi: 'hi-IN', es: 'es-ES' };
   const utter   = new SpeechSynthesisUtterance(normalizeSpeechText(text, language));

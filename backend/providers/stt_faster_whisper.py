@@ -129,16 +129,34 @@ class FasterWhisperSTTProvider(STTProvider):
                 audio,
                 beam_size=5,
                 language=None,         # auto-detect
-                vad_filter=True,       # silero VAD built into faster-whisper
-                vad_parameters=dict(min_silence_duration_ms=400),
+                vad_filter=False,      # disabled: tiny model VAD is overly aggressive
             )
             # Materialise the lazy generator
             segments = list(segments_gen)
             transcript = " ".join(s.text.strip() for s in segments).strip()
+
+            detected_lang = info.language
+            lang_prob = float(info.language_probability)
+
+            # Urdu ('ur') and Hindi ('hi') share the same spoken form (Hindustani).
+            # Re-transcribe with language='hi' so Whisper outputs Devanagari
+            # instead of Arabic/Urdu script.
+            if detected_lang == "ur":
+                logger.info("Whisper detected 'ur'; re-transcribing with language='hi' for Devanagari output.")
+                seg2, info2 = model.transcribe(
+                    audio,
+                    beam_size=5,
+                    language="hi",
+                    vad_filter=False,
+                )
+                transcript = " ".join(s.text.strip() for s in seg2).strip()
+                detected_lang = "hi"
+                lang_prob = max(lang_prob, float(info2.language_probability))
+
             return STTResult(
                 text=transcript,
-                language=info.language,
-                language_probability=float(info.language_probability),
+                language=detected_lang,
+                language_probability=lang_prob,
             )
         except RuntimeError as e:
             # faster-whisper not installed
