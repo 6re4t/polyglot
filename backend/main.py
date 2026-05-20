@@ -53,8 +53,7 @@ from services.latency import LatencyTracker
 from providers.mock import MockSTTProvider, MockLLMProvider, MockTTSProvider
 
 try:
-    from providers.stt_faster_whisper import FasterWhisperSTTProvider
-    _HAS_WHISPER = True
+    from providers.stt_faster_whisper import FasterWhisperSTTProvider, _FASTER_WHISPER_OK as _HAS_WHISPER
 except Exception:
     _HAS_WHISPER = False
 
@@ -270,7 +269,7 @@ async def _process_turn(
     session.memory.last_language = language
 
     # 2. Build system prompt with current memory context
-    system_prompt = _build_system_prompt(session.memory)
+    system_prompt = _build_system_prompt(session.memory, language)
 
     # 3. Add user message to rolling history
     session.memory.add_message("user", text)
@@ -323,19 +322,35 @@ async def _process_turn(
 
 # ── System prompt builder ──────────────────────────────────────────────────────
 
-def _build_system_prompt(memory) -> str:
+_LANG_INSTRUCTIONS = {
+    "en": "Reply in clear, natural English.",
+    "hi": (
+        "Reply ONLY in Hindi. Use romanized Hindi (Hinglish) if the user wrote in romanized "
+        "script, or Devanagari if the user wrote in Devanagari. NEVER reply in English unless "
+        "the user explicitly asks you to switch to English."
+    ),
+    "es": (
+        "Reply ONLY in Spanish. Use natural, conversational Spanish. NEVER reply in English "
+        "unless the user explicitly asks you to switch to English."
+    ),
+}
+
+
+def _build_system_prompt(memory, language: str = "en") -> str:
     ctx = memory.structured.to_context_string()
+    lang_instruction = _LANG_INSTRUCTIONS.get(language, _LANG_INSTRUCTIONS["en"])
+    lang_names = {"en": "English", "hi": "Hindi", "es": "Spanish"}
+    lang_name = lang_names.get(language, language)
     return f"""\
 You are a multilingual real-time voice support assistant.
 
+ACTIVE LANGUAGE: {lang_name} (code: {language})
+LANGUAGE INSTRUCTION: {lang_instruction}
+
 STRICT RULES:
-- Always reply in the user's LATEST active language (the language of their most recent message).
+- The user is currently speaking {lang_name}. Your reply MUST be in {lang_name}.
 - Keep replies short, natural, and voice-friendly — 2 to 4 sentences maximum.
 - Preserve full context across language switches. NEVER reset memory or forget previous turns.
-- For English: reply in clear, natural English.
-- For Hindi: reply in natural romanized Hindi (Hinglish) if the user wrote in romanized Hindi,
-  or in Devanagari if appropriate. Match the user's style exactly.
-- For Spanish: reply in natural, conversational Spanish.
 - When the user switches language, switch immediately and confirm naturally without announcing it.
 - Do NOT say "I noticed you switched to X language" or similar meta-commentary.
 
